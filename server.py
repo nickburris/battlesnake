@@ -10,6 +10,15 @@ For instructions see https://github.com/BattlesnakeOfficial/starter-snake-python
 
 
 class Battlesnake(object):
+    # State set per-turn
+    data = None
+    board = None
+
+    # State stored across turns
+    # TODO this assumes one game at a time, move all logic to a different
+    # class and create an instance per game ID
+    just_ate = False
+
     @cherrypy.expose
     @cherrypy.tools.json_out()
     def index(self):
@@ -18,10 +27,10 @@ class Battlesnake(object):
         # TIP: If you open your Battlesnake URL in browser you should see this data
         return {
             "apiversion": "1",
-            "author": "",  # TODO: Your Battlesnake Username
-            "color": "#888888",  # TODO: Personalize
-            "head": "default",  # TODO: Personalize
-            "tail": "default",  # TODO: Personalize
+            "author": "nickburris",
+            "color": "#fc6149",
+            "head": "pixel",
+            "tail": "hook",
         }
 
     @cherrypy.expose
@@ -32,8 +41,89 @@ class Battlesnake(object):
         # TODO: Use this function to decide how your snake is going to look on the board.
         data = cherrypy.request.json
 
+        # Initialize game state
+        # TODO assumes one game at a time, should actually create a new
+        # game instance.
+        self.growing = False
+
         print("START")
+        print(data)
         return "ok"
+
+    def make_board(self):
+      self.board = [[None for y in range(self.data["board"]["height"])]
+          for x in range(self.data["board"]["width"])]
+      
+      for snake in self.data["board"]["snakes"]:
+        for body in snake["body"]:
+          self.board[body["x"]][body["y"]] = "body"
+        self.board[snake["head"]["x"]][snake["head"]["y"]] = "head"
+
+      for food in self.data["board"]["food"]:
+        self.board[food["x"]][food["y"]] = "food"
+
+    def get_dest(self, m):
+      dest_x = self.data["you"]["head"]["x"]
+      dest_y = self.data["you"]["head"]["y"]
+      if m == "up":
+        dest_y+=1;
+      elif m == "down":
+        dest_y-=1;
+      elif m == "left":
+        dest_x-=1;
+      elif m == "right":
+        dest_x+=1;
+      
+      return dest_x, dest_y
+    
+    def possible(self, m):
+      dest_x, dest_y = self.get_dest(m)
+      
+      # Check bounds
+      if (dest_x < 0 or dest_x >= self.data["board"]["width"] or
+          dest_y < 0 or dest_y >= self.data["board"]["height"]):
+        return False
+      
+      # Check immediate collision
+      if self.board[dest_x][dest_y] in {"body", "head"}:
+        return False
+      
+      return True
+
+    def will_eat(self, m):
+      dest_x, dest_y = self.get_dest(m)
+      if self.board[dest_x][dest_y] == "food":
+        return True
+      return False
+
+    # Return the immediate direction that the tail is in if it is one space
+    # away (i.e. it can be followed, but make sure to also check for growth)
+    def find_tail(self):
+      if self.data["you"]["length"] <= 3:
+        return None
+
+      head_x = self.data["you"]["head"]["x"]
+      head_y = self.data["you"]["head"]["y"]
+      tail_x = self.data["you"]["body"][-1]["x"]
+      tail_y = self.data["you"]["body"][-1]["y"]
+      if head_x == tail_x:
+        if tail_y == head_y + 1:
+          return "up"
+        if tail_y == head_y - 1:
+          return "down"
+      if head_y == tail_y:
+        if tail_x == head_x + 1:
+          return "right"
+        if tail_x == head_x - 1:
+          return "left"
+      
+      return None
+
+    def health_critical(self):
+      return self.data["you"]["health"] <= 20
+
+    def growing(self):
+      return self.just_ate
 
     @cherrypy.expose
     @cherrypy.tools.json_in()
@@ -41,12 +131,34 @@ class Battlesnake(object):
     def move(self):
         # This function is called on every turn of a game. It's how your snake decides where to move.
         # Valid moves are "up", "down", "left", or "right".
-        # TODO: Use the information in cherrypy.request.json to decide your next move.
-        data = cherrypy.request.json
+        self.data = cherrypy.request.json
+        self.make_board()
 
-        # Choose a random direction to move in
+        move = "up"
+
         possible_moves = ["up", "down", "left", "right"]
-        move = random.choice(possible_moves)
+        possible_moves = [m for m in possible_moves if self.possible(m)]
+        
+        to_tail = self.find_tail()
+        if to_tail and not self.growing() and not self.health_critical():
+          # TODO shouldn't always follow tail, e.g. if health is low
+          print(f"MOVE: {to_tail} (following tail)")
+          return {"move": to_tail}
+
+        # Constricted moves probably lead to death
+        # TODO remove constricted moves, like turning toward a corner/cave
+        # ... follow up TODO what if they're all constricted? Then
+        # constricted moves might be necessary and some constricted moves
+        # may not be killers (e.g. they open up before it's too late)
+
+        # Choose a random possible direction to move in
+        if possible_moves:
+          move = random.choice(possible_moves)
+        else:
+          print("No possible moves!")
+
+        # Set whether we'll be growing next move
+        self.just_ate = self.will_eat(move)
 
         print(f"MOVE: {move}")
         return {"move": move}
