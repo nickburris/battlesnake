@@ -172,6 +172,9 @@ class Battlesnake(object):
         preferred_moves = [
             m for m in possible_moves if self.breathing_room(m) == most_room]
 
+        # TODO don't prefer a move if it's possible to head-to-head in a losing
+        # battle.
+
         # Choose a random direction to move in
         if preferred_moves:
           move = random.choice(preferred_moves)
