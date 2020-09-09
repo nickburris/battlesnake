@@ -30,6 +30,8 @@ class Battlesnake(object):
     data = None
     board = None
     breathing_rooms = {}
+    head_x = -1
+    head_y = -1
 
     # State stored across turns
     just_ate = False
@@ -112,6 +114,9 @@ class Battlesnake(object):
     def growing(self):
       return self.just_ate
 
+    def get_length(self):
+      return self.data["you"]["length"]
+
     # Returns the area of the shape including the space in direction m
     def breathing_room(self, m):
       if m in self.breathing_rooms:
@@ -144,10 +149,47 @@ class Battlesnake(object):
       self.breathing_rooms[m] = room
       return room
 
+    # Return whether there is an enemy with head at (x, y)
+    def is_enemy_head(self, x, y):
+      if not self.in_range(x, y):
+        return False
+      if x == self.head_x and y == self.head_y:
+        return False
+      return self.board[x][y] == "head"
+
+    # Return the length of the snake with head at (x, y)
+    def length_of_enemy(self, x, y):
+      if not self.is_enemy_head(x, y):
+        return -1
+      
+      # Search for the snake
+      # TODO index snakes by head position
+      for snake in self.data["board"]["snakes"]:
+        if x == snake["head"]["x"] and y == snake["head"]["y"]:
+          return snake["length"]
+      return -1
+
+    # Return whether the destination in direction m has a snake one
+    # space away that could move there at the same time, and that snake
+    # has higher health than us.
+    def possible_losing_fight(self, m):
+      dest_x, dest_y = self.get_dest(m)
+      if not self.unoccupied(dest_x, dest_y):
+        return False
+      
+      enemy_lengths = [
+          self.length_of_enemy(dx,dy) for (dx,dy) in [(dest_x+1,dest_y),(dest_x,dest_y+1),(dest_x-1,dest_y),(dest_x,dest_y-1)]]
+      for enemy_length in enemy_lengths:
+        if self.get_length() <= enemy_length:
+          return True
+      return False
+
     def move(self, data):
         self.data = data
         self.make_board()
         self.breathing_rooms = {}
+        self.head_x = data["you"]["head"]["x"]
+        self.head_y = data["you"]["head"]["y"]
 
         move = "up"
 
@@ -172,8 +214,10 @@ class Battlesnake(object):
         preferred_moves = [
             m for m in possible_moves if self.breathing_room(m) == most_room]
 
-        # TODO don't prefer a move if it's possible to head-to-head in a losing
+        # Don't prefer a move if it's possible to head-to-head in a losing
         # battle.
+        preferred_moves = [
+            m for m in preferred_moves if not self.possible_losing_fight(m)] or preferred_moves
 
         # Choose a random direction to move in
         if preferred_moves:
