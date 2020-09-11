@@ -9,6 +9,10 @@ This is a simple Battlesnake server written in Python.
 For instructions see https://github.com/BattlesnakeOfficial/starter-snake-python/README.md
 """
 
+# TODO log to file
+def log(m):
+  print(m)
+
 def in_board_range(board, x, y):
   if (x < 0 or x >= len(board) or
       y < 0 or y >= len(board[0])):
@@ -32,6 +36,7 @@ class Battlesnake(object):
     breathing_rooms = {}
     head_x = -1
     head_y = -1
+    tail_dir = None
 
     # State stored across turns
     just_ate = False
@@ -73,7 +78,7 @@ class Battlesnake(object):
 
     def possible(self, m):
       dest_x, dest_y = self.get_dest(m)
-      return self.unoccupied(dest_x, dest_y)
+      return self.unoccupied(dest_x, dest_y) or (m == self.tail_dir and not self.growing())
 
     def will_eat(self, m):
       dest_x, dest_y = self.get_dest(m)
@@ -110,6 +115,9 @@ class Battlesnake(object):
 
     def health_critical(self):
       return self.data["you"]["health"] <= 20
+    
+    def health_low(self):
+      return self.data["you"]["health"] <= 50
 
     def growing(self):
       return self.just_ate
@@ -146,6 +154,7 @@ class Battlesnake(object):
           if board_space_unoccupied(board, dx, dy):
             queue.append((dx, dy))
 
+      log(f"[breathing_room] Breathing room {room} in direction {m}")
       self.breathing_rooms[m] = room
       return room
 
@@ -180,27 +189,70 @@ class Battlesnake(object):
       enemy_lengths = [
           self.length_of_enemy(dx,dy) for (dx,dy) in [(dest_x+1,dest_y),(dest_x,dest_y+1),(dest_x-1,dest_y),(dest_x,dest_y-1)]]
       for enemy_length in enemy_lengths:
-        if self.get_length() <= enemy_length:
+        # TODO the enemy might be growing, so this is extra careful but
+        # could actually track if the enemy is growing.
+        if self.get_length() <= enemy_length + 1:
+          log(f"[possible_losing_fight] Move {m} is a possible losing fight because of enemy with length {enemy_length}")
           return True
       return False
+    
+    # Return the direction(s) that move toward (x, y)
+    def directions_toward(self, x, y):
+      directions = []
+      if x < self.head_x:
+        directions.append("left")
+      elif x > self.head_x:
+        directions.append("right")
+      if y < self.head_y:
+        directions.append("down")
+      elif y > self.head_y:
+        directions.append("up")
+      
+      return directions
 
+    # Return the direction(s) that move toward the nearest food
+    # TODO this is absolute nearest, doesn't account for things in the way
+    def nearest_food_directions(self):
+      foods = [(food["x"], food["y"]) for food in self.data["board"]["food"]]
+      foods.sort(key=lambda food: abs(food[0]-self.head_x) + abs(food[1]-self.head_y))
+      (fx, fy) = foods[0]
+      directions = self.directions_toward(fx, fy)
+      log(f"[nearest_food_directions] return {directions}")
+      return directions
+
+    # Return whether we're the longest snake
+    def am_longest(self):
+      for snake in self.data["board"]["snakes"]:
+        if snake["length"] > self.get_length():
+          return False
+      return True
+
+    # Decide a move based on the game data
     def move(self, data):
         self.data = data
         self.make_board()
         self.breathing_rooms = {}
         self.head_x = data["you"]["head"]["x"]
         self.head_y = data["you"]["head"]["y"]
+        self.tail_dir = self.find_tail()
 
         move = "up"
 
         possible_moves = ["up", "down", "left", "right"]
         possible_moves = [m for m in possible_moves if self.possible(m)]
         
-        to_tail = self.find_tail()
-        if to_tail and not self.growing() and not self.health_critical():
+        to_tail = self.tail_dir
+        if to_tail and self.am_longest() and not self.growing() and not self.health_low() and not self.possible_losing_fight(to_tail):
           # TODO shouldn't always follow tail, e.g. if health is low
-          print(f"MOVE: {to_tail} (following tail)")
-          return {"move": to_tail}
+          log(f"[move] Moving {to_tail} (following tail)")
+          return to_tail
+
+        preferred_moves = copy.deepcopy(possible_moves)
+
+        # Prefer moves that aren't a possible head-to-head in a losing battle
+        log("[move] Checking for possible losing fights")
+        preferred_moves = [
+            m for m in preferred_moves if not self.possible_losing_fight(m)] or preferred_moves
 
         # Prefer to move in the direction with the most "breathing room"
         # TODO consider that a areas may open up "before it's too late",
@@ -208,34 +260,37 @@ class Battlesnake(object):
         # area of 4 would expand to 20 before it's too late then we'd want to go
         # that way. Similarly, the area with the most breathing room might close
         # off.
-        possible_moves.sort(key=self.breathing_room, reverse=True)
-        if possible_moves:
-          most_room = self.breathing_room(possible_moves[0])
+        preferred_moves.sort(key=self.breathing_room, reverse=True)
+        if preferred_moves:
+          most_room = self.breathing_room(preferred_moves[0])
         preferred_moves = [
-            m for m in possible_moves if self.breathing_room(m) == most_room]
+            m for m in preferred_moves if self.breathing_room(m) == most_room]
 
-        # Don't prefer a move if it's possible to head-to-head in a losing
-        # battle.
+        # Prefer moves that move toward food
+        log("[move] Checking for moves toward food")
+        nearest_food_directions = self.nearest_food_directions()
         preferred_moves = [
-            m for m in preferred_moves if not self.possible_losing_fight(m)] or preferred_moves
+            m for m in preferred_moves if m in nearest_food_directions] or preferred_moves
 
         # Choose a random direction to move in
         if preferred_moves:
+          log(f"[move] Choosing from preferred moves {preferred_moves}")
           move = random.choice(preferred_moves)
         elif possible_moves:
+          log(f"[move] No preferred moves, choosing possible move from {possible_moves}")
           move = random.choice(possible_moves)
         else:
-          print("No possible moves!")
+          log("[move] No possible moves!")
 
         # Set whether we'll be growing next move
         self.just_ate = self.will_eat(move)
 
-        print(f"Move {move}")
+        log(f"[move] Moving {move}")
         return move
 
     def end(self, data):
         # TODO determine if we won
-        print("GG")
+        log("[end] GG")
 
 class Server(object):
     games = {}
@@ -261,7 +316,7 @@ class Server(object):
         # cherrypy.request.json contains information about the game that's about to be played.
         data = cherrypy.request.json
         id = data["game"]["id"]
-        print(f"Starting game {id}")
+        log(f"Starting game {id}")
         self.games[id] = Battlesnake()
         return "ok"
 
@@ -273,7 +328,7 @@ class Server(object):
         # Valid moves are "up", "down", "left", or "right".
         data = cherrypy.request.json
         id = data["game"]["id"]
-        print(f"Game {id}")
+        log(f"Game {id}")
         return {"move": self.games[id].move(data)}
 
     @cherrypy.expose
@@ -283,7 +338,7 @@ class Server(object):
         # It's purely for informational purposes, you don't have to make any decisions here.
         data = cherrypy.request.json
         id = data["game"]["id"]
-        print(f"Game {id} over")
+        log(f"Game {id} over")
         self.games[id].end(data)
         self.games[id] = None
         return "ok"
@@ -295,5 +350,5 @@ if __name__ == "__main__":
     cherrypy.config.update(
         {"server.socket_port": int(os.environ.get("PORT", "8080")),}
     )
-    print("Starting Battlesnake Server...")
+    log("Starting Battlesnake Server...")
     cherrypy.quickstart(server)
